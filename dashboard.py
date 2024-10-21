@@ -10,19 +10,19 @@ import numpy as np
 def get_color(category):
     # Define an improved color map for categories and subcategories
     color_map = {
-        "Savings": "#1E90FF",  # Blue
-        "Income": "#32CD32",  # Lime Green
-        "Transportation": "#FFD700",  # Gold
-        "Uncategorised": "#A9A9A9",  # Gray
-        "Housing": "#4682B4",  # Steel Blue
-        "Electricity": "#FF8C00",  # Dark Orange
-        "Shopping": "#FF69B4",  # Hot Pink
-        "Food & Consumables": "#8A2BE2",  # Blue Violet
-        "Subscriptions": "#6A5ACD",  # Slate Blue
-        "Health": "#3CB371",  # Medium Sea Green
-        "Taxes & obligations": "#B22222",  # Firebrick
-        "Entertainment": "#FF1493",  # Deep Pink
-        "Travels": "#FF6347",  # Tomato
+        "Savings": "#0bb4ff",
+        "Income": "#50e991",
+        "Transportation": "#9b19f5",
+        "Uncategorised": "#d7e1ee",
+        "Housing": "#ffa300",
+        "Electricity": "#e6d800",
+        "Shopping": "#dc0ab4",
+        "Food & Consumables": "#e60049",
+        "Subscriptions": "#f46a9b",
+        "Health": "#7c1158",
+        "Taxes & obligations": "#b3d4ff",
+        "Entertainment": "#fdcce5",
+        "Travels": "#00bfa0",
     }
     return color_map.get(category, "#d3d3d3")  # Default to light grey if not in map
 
@@ -122,12 +122,9 @@ def create_monthly_balance_change_bar_chart(df):
     return fig
 
 
-def create_savings_goal_gauge(df, savings_goal=5000):
-    # Exclude the "Savings" category
-    df_no_savings = df[df["Supercategory"] != "Savings"]
-
+def create_savings_goal_gauge(df, savings_goal=10000):
     # Calculate remaining money at the end of the period (final balance)
-    total_balance = df_no_savings["Progressive Balance"].iloc[-1]
+    total_balance = -df[df["Supercategory"] == "Savings"]["Amount"].sum()
 
     # Create a gauge chart to show progress towards savings goal
     fig = go.Figure(
@@ -159,6 +156,7 @@ def create_monthly_expenses_bar_chart(df):
         color="Supercategory",
         title="Monthly Expenses by Category",
         labels={"Amount": "Total Expenses (€)", "Month": "Month"},
+        color_discrete_map={sc: get_color(sc) for sc in monthly_expenses["Supercategory"].unique()},
     )
     fig.update_layout(barmode="stack", xaxis_title="Month", yaxis_title="Total Expenses (€)")
     return fig
@@ -179,6 +177,7 @@ def create_all_time_expenses_bar_chart(df):
         color="Supercategory",
         title="All-Time Expenses by Category",
         labels={"Amount": "Total Expenses (€)", "Supercategory": "Supercategory"},
+        color_discrete_map={sc: get_color(sc) for sc in total_expenses["Supercategory"].unique()},
     )
     fig.update_layout(barmode="stack", xaxis_title="Supercategory", yaxis_title="Total Expenses (€)")
     return fig
@@ -210,16 +209,14 @@ app.layout = html.Div(
 )
 def update_graphs(_):
     loader = Piraeus_data_loader("PiraeusStatement.xlsx")
-    loader.digest_bank_statement("Κινήσεις Λογαριασμών_20241018.xlsx")
-    loader.digest_bank_statement("Κινήσεις Λογαριασμών_20241016.xlsx")
+    loader.digest_bank_statement("Κινήσεις Λογαριασμών_20241019.xlsx")
     balance_df = loader.get_balance_df()
     expenses_df = loader.get_expenses_df()
     balance_chart = create_balance_chart(balance_df, threshold=50)
     monthly_balance_change_bar_chart = create_monthly_balance_change_bar_chart(expenses_df)
-
     savings_goal_gauge = create_savings_goal_gauge(balance_df)
-    monthly_expenses_bar_chart = create_monthly_expenses_bar_chart(balance_df)
-    all_time_expenses_bar_chart = create_all_time_expenses_bar_chart(balance_df)
+    monthly_expenses_bar_chart = create_monthly_expenses_bar_chart(expenses_df)
+    all_time_expenses_bar_chart = create_all_time_expenses_bar_chart(expenses_df)
     return (
         balance_chart,
         monthly_balance_change_bar_chart,
@@ -241,6 +238,7 @@ class Piraeus_data_loader:
         df["Transaction Date"] = pd.to_datetime(df["Transaction Date"], format="%d/%m/%Y")  # .dt.strftime('%d/%m/%Y')
         df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
         df["Progressive Balance"] = pd.to_numeric(df["Progressive Balance"], errors="coerce")
+        self.map_supercategories(df)  # TEMP
         return df
 
     def digest_bank_statement(self, filepath):
@@ -311,7 +309,7 @@ class Piraeus_data_loader:
 
     def update_progressive_balance(self, df):
         # Start with the last transaction and work backwards
-        for i in range(len(df) - 2, 0, -1):
+        for i in range(len(df) - 2, -1, -1):
             prev_balance = df.iloc[i + 1]["Progressive Balance"]
             amount = df.iloc[i]["Amount"]
             df.iloc[i, df.columns.get_loc("Progressive Balance")] = prev_balance + amount
@@ -386,8 +384,10 @@ class Piraeus_data_loader:
             supercategory_from_keywords = check_keywords(row["Comments"])
             if supercategory_from_keywords:
                 return supercategory_from_keywords
-            # elif abs(row['Amount']) > 1000:
-            #     return 'Large Transfers'
+            elif (abs(row["Amount"]) < 40) and (
+                row["Transaction Description"].strip() in ["ΕΞΕΡΧΟΜΕΝΟ ΕΜΒΑΣΜΑ", "ΕΙΣΕΡΧΟΜΕΝΟ ΕΜΒΑΣΜΑ"]
+            ):
+                return "Food & Consumables"
             return category_mapping.get(row["Category"], "Other")
 
         df["Supercategory"] = df.apply(apply_rules, axis=1)
