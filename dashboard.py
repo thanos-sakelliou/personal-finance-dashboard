@@ -1,10 +1,11 @@
 import pandas as pd
 import dash
 from dash import dcc, html
-from dash.dependencies import Input, Output
+from dash.dependencies import Input, Output, State
 import plotly.graph_objs as go
 import plotly.express as px
 import numpy as np
+import argparse
 
 
 def get_color(category):
@@ -30,7 +31,11 @@ def get_color(category):
 def create_balance_chart(df, threshold=100):
     # Create the base line chart for the account balance
     line_trace = go.Scatter(
-        x=df["Transaction Date"], y=df["Progressive Balance"], mode="lines", name="Balance", line=dict(color="blue")
+        x=df["Transaction Date"],
+        y=df["Progressive Balance"],
+        mode="lines",
+        name="Balance",
+        line=dict(color="blue"),
     )
 
     # Filter high-value transactions
@@ -66,7 +71,10 @@ def create_balance_chart(df, threshold=100):
 
     # Update layout
     fig.update_layout(
-        title="Blow Account Balance", xaxis_title="Date", yaxis_title="Account Balance (€)", showlegend=True
+        title="Blow Account Balance",
+        xaxis_title="Date",
+        yaxis_title="Account Balance (€)",
+        showlegend=True,
     )
 
     return fig
@@ -117,7 +125,12 @@ def create_monthly_balance_change_bar_chart(df):
     fig = go.Figure(data=[bar_trace, line_trace])
 
     # Update layout
-    fig.update_layout(title="Monthly Gains and losses", xaxis_title="Month", yaxis_title="Amount (€)", showlegend=True)
+    fig.update_layout(
+        title="Monthly Gains and losses",
+        xaxis_title="Month",
+        yaxis_title="Amount (€)",
+        showlegend=True,
+    )
 
     return fig
 
@@ -183,47 +196,337 @@ def create_all_time_expenses_bar_chart(df):
     return fig
 
 
-app = dash.Dash(__name__)
+class PersonalFinanceDashboard:
+    def __init__(self, data_file, add_file):
+        self.app = dash.Dash(__name__)
+        self.data_file = data_file
+        self.loader = Piraeus_data_loader(self.data_file)
+        if add_file:
+            self.loader.digest_bank_statement(add_file)
+        self.expenses_df = self.loader.get_expenses_df()
+        self.balance_df = self.loader.get_balance_df()
 
-app.layout = html.Div(
-    [
-        html.H1("Personal Finance Dashboard"),
-        dcc.Graph(id="balance-chart"),
-        dcc.Graph(id="monthly-balance-change-bar-chart"),
-        dcc.Graph(id="savings-goal-gauge"),
-        dcc.Graph(id="monthly-expenses-bar-chart"),
-        dcc.Graph(id="all-time-expenses-bar-chart"),
-    ]
-)
+        # Define the layout in the constructor
+        self.app.layout = html.Div(
+            [
+                html.H1("Personal Finance Dashboard"),
+                dcc.Graph(id="balance-chart"),
+                dcc.Graph(id="monthly-balance-change-bar-chart"),
+                dcc.Graph(id="monthly-expenses-bar-chart"),
+                html.Div(
+                    [
+                        html.Div(
+                            [dcc.Graph(id="savings-goal-gauge")],
+                            style={"width": "30%", "display": "inline-block"},
+                        ),
+                        html.Div(
+                            [dcc.Graph(id="all-time-expenses-bar-chart")],
+                            style={"width": "68%", "display": "inline-block"},
+                        ),
+                    ],
+                    style={"display": "flex", "justify-content": "space-between"},
+                ),
+                html.H3("Uncategorized Transactions"),
+                html.Div(
+                    id="uncategorized-list",
+                    style={"max-height": "400px", "overflow-y": "scroll"},
+                ),
+                html.H3("Batch Update Supercategory by Date Range"),
+                html.Div(
+                    [
+                        dcc.DatePickerRange(
+                            id="date-range-picker",
+                            display_format="DD/MM/YYYY",
+                        ),
+                        dcc.Dropdown(
+                            id="supercategory-dropdown",
+                            options=[
+                                {"label": cat, "value": cat}
+                                for cat in [
+                                    "Savings",
+                                    "Income",
+                                    "Transportation",
+                                    "Housing",
+                                    "Electricity",
+                                    "Shopping",
+                                    "Food & Consumables",
+                                    "Subscriptions",
+                                    "Health",
+                                    "Taxes & obligations",
+                                    "Entertainment",
+                                    "Travels",
+                                ]
+                            ],
+                            placeholder="Select Supercategory",
+                            style={"width": "200px"},
+                        ),
+                        html.Button("Set Supercategory", id="set-supercategory-button"),
+                    ],
+                    style={"display": "flex", "align-items": "center"},
+                ),
+                html.Button("Save Changes", id="save-button", n_clicks=0),
+                html.Button("Reload Data", id="reload-button", n_clicks=0),
+            ]
+        )
 
+        # Define the callbacks
+        self.define_callbacks()
 
-@app.callback(
-    [
-        Output("balance-chart", "figure"),
-        Output("monthly-balance-change-bar-chart", "figure"),
-        Output("savings-goal-gauge", "figure"),
-        Output("monthly-expenses-bar-chart", "figure"),
-        Output("all-time-expenses-bar-chart", "figure"),
-    ],
-    [Input("balance-chart", "id")],
-)
-def update_graphs(_):
-    loader = Piraeus_data_loader("PiraeusStatement.xlsx")
-    loader.digest_bank_statement("Κινήσεις Λογαριασμών_20241019.xlsx")
-    balance_df = loader.get_balance_df()
-    expenses_df = loader.get_expenses_df()
-    balance_chart = create_balance_chart(balance_df, threshold=50)
-    monthly_balance_change_bar_chart = create_monthly_balance_change_bar_chart(expenses_df)
-    savings_goal_gauge = create_savings_goal_gauge(balance_df)
-    monthly_expenses_bar_chart = create_monthly_expenses_bar_chart(expenses_df)
-    all_time_expenses_bar_chart = create_all_time_expenses_bar_chart(expenses_df)
-    return (
-        balance_chart,
-        monthly_balance_change_bar_chart,
-        savings_goal_gauge,
-        monthly_expenses_bar_chart,
-        all_time_expenses_bar_chart,
-    )
+    def define_callbacks(self):
+        @self.app.callback(
+            Output("uncategorized-list", "children"),
+            [
+                Input("reload-button", "n_clicks"),
+                Input(
+                    {
+                        "type": "set-supercategory",
+                        "index": dash.dependencies.ALL,
+                        "category": dash.dependencies.ALL,
+                    },
+                    "n_clicks",
+                ),
+            ],
+            State("uncategorized-list", "children"),
+        )
+        def load_or_update_uncategorized_list(reload_n_clicks, n_clicks_list, children):
+            ctx = dash.callback_context  # Get the context of the callback to know which input triggered it
+
+            if not ctx.triggered:
+                # If no input has triggered, return the current children
+                return children
+
+            triggered_input = ctx.triggered[0]["prop_id"]
+
+            # If Reload button was clicked
+            if "reload-button" in triggered_input:
+                self.loader = Piraeus_data_loader(self.data_file)
+                self.expenses_df = self.loader.get_expenses_df()
+                self.balance_df = self.loader.get_balance_df()
+
+                uncategorized_df = self.loader.df[
+                    (self.loader.df["Supercategory"] == "Uncategorised") | (self.loader.df["Supercategory"] == "Other")
+                ]
+                uncategorized_df = uncategorized_df[abs(uncategorized_df["Amount"]) > 5]
+                items = self.create_uncategorized_items(uncategorized_df)
+                return items
+
+            # If a category button was clicked
+            elif "set-supercategory" in triggered_input:
+                for button_id, n_clicks in enumerate(n_clicks_list):
+                    if n_clicks:
+                        button_data = ctx.triggered[0]["prop_id"].split(".")[0]
+                        button_info = eval(button_data)  # This is a dict with `type`, `index`, and `category`
+                        index = button_info["index"]
+                        new_category = button_info["category"]
+
+                        # Update the supercategory for the corresponding row
+                        self.loader.df.at[index, "Supercategory"] = new_category
+                        print(self.loader.df.iloc[index])
+
+                # Reload the uncategorized transactions and rerender the list
+                uncategorized_df = self.loader.df[
+                    (self.loader.df["Supercategory"] == "Uncategorised") | (self.loader.df["Supercategory"] == "Other")
+                ]
+                uncategorized_df = uncategorized_df[abs(uncategorized_df["Amount"]) > 5]
+                items = self.create_uncategorized_items(uncategorized_df)
+                return items
+
+            # Return the existing children if none of the above is triggered
+            return children
+
+        @self.app.callback(
+            Input("set-supercategory-button", "n_clicks"),
+            [
+                State("date-range-picker", "start_date"),
+                State("date-range-picker", "end_date"),
+                State("supercategory-dropdown", "value"),
+            ],
+        )
+        def batch_update_supercategory(n_clicks, start_date, end_date, supercategory):
+            if n_clicks and start_date and end_date and supercategory:
+                # Update transactions within the date range
+                mask = (
+                    (self.loader.df["Transaction Date"] >= pd.to_datetime(start_date))
+                    & (self.loader.df["Transaction Date"] <= pd.to_datetime(end_date))
+                    & (
+                        self.loader.df[
+                            self.loader.df["Supercategory"].isin(
+                                [
+                                    "Uncategorised",
+                                    "Shopping",
+                                    "Transportation",
+                                    "Food & Consumables",
+                                    "Health",
+                                    "Entertainment",
+                                    "Other",
+                                ]
+                            )
+                        ]
+                    )
+                )
+                self.loader.df.loc[mask, "Supercategory"] = supercategory
+
+                uncategorized_df = self.loader.df[self.loader.df["Supercategory"] == "Uncategorised"]
+                uncategorized_df = uncategorized_df[abs(uncategorized_df["Amount"]) > 5]
+                items = self.create_uncategorized_items(uncategorized_df)
+                return items
+
+            return dash.no_update
+
+        @self.app.callback(
+            [
+                Output("balance-chart", "figure"),
+                Output("monthly-balance-change-bar-chart", "figure"),
+                Output("savings-goal-gauge", "figure"),
+                Output("monthly-expenses-bar-chart", "figure"),
+                Output("all-time-expenses-bar-chart", "figure"),
+            ],
+            [Input("balance-chart", "id")],
+        )
+        def update_graphs(_):
+            balance_chart = create_balance_chart(self.balance_df, threshold=50)
+            monthly_balance_change_bar_chart = create_monthly_balance_change_bar_chart(self.expenses_df)
+            savings_goal_gauge = create_savings_goal_gauge(self.balance_df)
+            monthly_expenses_bar_chart = create_monthly_expenses_bar_chart(self.expenses_df)
+            all_time_expenses_bar_chart = create_all_time_expenses_bar_chart(self.expenses_df)
+            return (
+                balance_chart,
+                monthly_balance_change_bar_chart,
+                savings_goal_gauge,
+                monthly_expenses_bar_chart,
+                all_time_expenses_bar_chart,
+            )
+
+        @self.app.callback(Output("save-button", "n_clicks"), Input("save-button", "n_clicks"))
+        def save_data(n_clicks):
+            if n_clicks > 0:
+                self.loader.save_to_excel()
+            return n_clicks
+
+    def create_uncategorized_items(self, df):
+        items = []
+        for i, row in df.iterrows():
+            items.append(
+                html.Div(
+                    [
+                        html.Span(
+                            row["Transaction Date"].strftime("%d/%m/%Y"),
+                            style={
+                                "flex": "1",
+                                "max-width": "100px",
+                                "overflow": "visible",
+                                "white-space": "normal",
+                                "word-wrap": "break-word",
+                            },
+                        ),
+                        html.Span(
+                            row["Transaction Description"],
+                            style={"flex": "1", "max-width": "250px"},
+                        ),
+                        html.Span(
+                            f'{row["Amount"]}€',
+                            style={"flex": "1", "max-width": "100px"},
+                        ),
+                        html.Span(
+                            f'{row["Comments"]}',
+                            style={"flex": "1", "max-width": "400px"},
+                        ),
+                        html.Div(
+                            [
+                                html.Button(
+                                    "Travels",
+                                    id={
+                                        "type": "set-supercategory",
+                                        "index": i,
+                                        "category": "Travels",
+                                    },
+                                    className="button",
+                                    style={
+                                        "backgroundColor": get_color("Travels"),
+                                        "marginLeft": "5px",
+                                    },
+                                ),
+                                html.Button(
+                                    "Food & Consumables",
+                                    id={
+                                        "type": "set-supercategory",
+                                        "index": i,
+                                        "category": "Food & Consumables",
+                                    },
+                                    className="button",
+                                    style={
+                                        "backgroundColor": get_color("Food & Consumables"),
+                                        "marginLeft": "5px",
+                                    },
+                                ),
+                                html.Button(
+                                    "Transportation",
+                                    id={
+                                        "type": "set-supercategory",
+                                        "index": i,
+                                        "category": "Transportation",
+                                    },
+                                    className="button",
+                                    style={
+                                        "backgroundColor": get_color("Transportation"),
+                                        "marginLeft": "5px",
+                                    },
+                                ),
+                                html.Button(
+                                    "Health",
+                                    id={
+                                        "type": "set-supercategory",
+                                        "index": i,
+                                        "category": "Health",
+                                    },
+                                    className="button",
+                                    style={
+                                        "backgroundColor": get_color("Health"),
+                                        "marginLeft": "5px",
+                                    },
+                                ),
+                                html.Button(
+                                    "Savings",
+                                    id={
+                                        "type": "set-supercategory",
+                                        "index": i,
+                                        "category": "Savings",
+                                    },
+                                    className="button",
+                                    style={
+                                        "backgroundColor": get_color("Savings"),
+                                        "marginLeft": "5px",
+                                    },
+                                ),
+                                html.Button(
+                                    "Taxes & obligations",
+                                    id={
+                                        "type": "set-supercategory",
+                                        "index": i,
+                                        "category": "Taxes & obligations",
+                                    },
+                                    className="button",
+                                    style={
+                                        "backgroundColor": get_color("Taxes & obligations"),
+                                        "marginLeft": "5px",
+                                    },
+                                ),
+                            ],
+                            style={"display": "flex", "align-items": "center"},
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "align-items": "flex-start",
+                        "padding": "5px 0",
+                        "font-family": "'Roboto', sans-serif",
+                    },
+                )
+            )
+        return items
+
+    def run(self):
+        self.app.run_server(debug=True)
 
 
 class Piraeus_data_loader:
@@ -238,7 +541,6 @@ class Piraeus_data_loader:
         df["Transaction Date"] = pd.to_datetime(df["Transaction Date"], format="%d/%m/%Y")  # .dt.strftime('%d/%m/%Y')
         df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
         df["Progressive Balance"] = pd.to_numeric(df["Progressive Balance"], errors="coerce")
-        self.map_supercategories(df)  # TEMP
         return df
 
     def digest_bank_statement(self, filepath):
@@ -396,8 +698,18 @@ class Piraeus_data_loader:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the Personal Finance Dashboard.")
+    parser.add_argument(
+        "--file",
+        type=str,
+        default="PiraeusStatement.xlsx",
+        help="Path to the Excel file containing transaction data",
+    )
+    parser.add_argument("--add", type=str, help="Extra transactions to digest")
+    args = parser.parse_args()
 
-    app.run_server(debug=True)
+    dashboard = PersonalFinanceDashboard(args.file, args.add)
+    dashboard.run()
 
 # TODO bigger graph.
 # TODO remove or change or add the trend heatmap
@@ -406,3 +718,7 @@ if __name__ == "__main__":
 
 # TODO uncategorised easy categorization
 # TODO filter some automatically
+
+
+# TODO when editing data it should be updated. neither "update" works
+# TODO update travels from google maps timeline
